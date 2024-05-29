@@ -1,7 +1,7 @@
 -- Represents user information
 CREATE TABLE `user` (
   `id` int PRIMARY KEY NOT NULL AUTO_INCREMENT, -- Unique identifier for the user
-  `username` varchar(64) DEFAULT null, -- Username of the user
+  `username` varchar(64) DEFAULT null -- Username of the user
 );
 
 -- Represent each payday
@@ -67,7 +67,7 @@ CREATE TABLE `net_worth` (
   `user_id` int NOT NULL, -- ID of the user
   `payday_id` int NOT NULL, -- ID of the payday
   `date` datetime NOT NULL, -- Date of the net worth record
-  `total_savings` decimal(15, 2) DEFAULT null, -- Total savings at the given date
+  `total_savings` decimal(15, 2) DEFAULT null, -- Total savings in banks at the given date
   `total_investments` decimal(15, 2) DEFAULT null, -- Total investments at the given date
   `total_pension` decimal(15, 2) DEFAULT null, -- Total pension at the given date
   `net_worth` decimal(15, 2) DEFAULT null, -- Total net worth at the given date
@@ -75,6 +75,19 @@ CREATE TABLE `net_worth` (
   CONSTRAINT `fk_net_worth_user_id` FOREIGN KEY (`user_id`) REFERENCES `user` (`id`),
   CONSTRAINT `fk_net_worth_payday_id` FOREIGN KEY (`payday_id`) REFERENCES `payday` (`id`)
 );
+
+--- Indexes
+
+-- Creating indexes for the user_id column in each table
+CREATE INDEX idx_payday_user_id ON `payday` (`user_id`);
+CREATE INDEX idx_monthly_expenses_payday_id ON `monthly_expenses` (`payday_id`);
+CREATE INDEX idx_broker_user_id ON `broker` (`user_id`);
+CREATE INDEX idx_bank_user_id ON `bank` (`user_id`);
+CREATE INDEX idx_pension_user_id ON `pension` (`user_id`);
+CREATE INDEX idx_net_worth_user_id ON `net_worth` (`user_id`);
+
+-- Creating an index for the payday_id column in the net_worth table
+CREATE INDEX idx_net_worth_payday_id ON `net_worth` (`payday_id`);
 
 --- TRIGGERS
 
@@ -110,19 +123,74 @@ FOR EACH ROW
 BEGIN
     SET NEW.latest_update = CURRENT_TIMESTAMP;
 END;
---
 
--- Change the delimiter to //
+-- This procedure will be called by triggers whenever an update or insert occurs in any of the relevant tables (savings, broker, pension)
 DELIMITER //
 
+CREATE PROCEDURE update_net_worth(IN user_id INT, IN payday_id INT)
+BEGIN
+    DECLARE total_savings DECIMAL(15, 2);
+    DECLARE total_investments DECIMAL(15, 2);
+    DECLARE total_pension DECIMAL(15, 2);
+    DECLARE net_worth DECIMAL(15, 2);
+
+    -- Sum the "amount" value for each user's bank 
+    SET total_savings = (SELECT IFNULL(SUM(amount), 0) FROM bank WHERE user_id = user_id);
+
+    -- Sum the "amount" value for each user's broker 
+    SET total_investments = (SELECT IFNULL(SUM(amount), 0) FROM broker WHERE user_id = user_id);
+
+    -- Sum the "amount" value for each user's pension 
+    SET total_pension = (SELECT IFNULL(SUM(amount), 0) FROM pension WHERE user_id = user_id);
+
+    -- Calculate the net worth for the user
+    SET net_worth = total_savings + total_investments + total_pension;
+
+    -- Check if a record already exists for the user and payday
+    -- SELECT 1: This simply returns 1 if the condition is met - IF EXISTS: evaluates to TRUE if the subquery returns any rows (SELECT 1 in this case).
+    IF EXISTS (SELECT 1 FROM net_worth WHERE user_id = user_id AND payday_id = payday_id) THEN
+        -- Update the existing record
+        UPDATE net_worth
+        SET total_savings = total_savings,
+            total_investments = total_investments,
+            total_pension = total_pension,
+            net_worth = net_worth,
+            date = CURRENT_TIMESTAMP
+        WHERE user_id = user_id AND payday_id = payday_id;
+    ELSE
+        -- Insert a new record
+        INSERT INTO net_worth (user_id, payday_id, date, total_savings, total_investments, total_pension, net_worth)
+        VALUES (user_id, payday_id, CURRENT_TIMESTAMP, total_savings, total_investments, total_pension, net_worth);
+    END IF;
+END //
+
+DELIMITER ;
+
+-- These triggers will call the update_net_worth procedure whenever an insert or update operation occurs.
+DELIMITER //
+
+-- Trigger for savings table
 CREATE TRIGGER update_net_worth_after_savings
 AFTER INSERT OR UPDATE ON savings
 FOR EACH ROW
 BEGIN
-  DECLARE total_savings DECIMAL(15, 2);
+    CALL update_net_worth(NEW.user_id, NEW.payday_id);
+END //
 
-  -- Calculate the total savings
-  SET total_savings = (SELECT SUM(amount) FROM savings WHERE user_id = NEW.user_id);
+-- Trigger for broker table
+CREATE TRIGGER update_net_worth_after_broker
+AFTER INSERT OR UPDATE ON broker
+FOR EACH ROW
+BEGIN
+    CALL update_net_worth(NEW.user_id, NEW.payday_id);
+END //
 
--- Change the delimiter back to ;
+-- Trigger for pension table
+CREATE TRIGGER update_net_worth_after_pension
+AFTER INSERT OR UPDATE ON pension
+FOR EACH ROW
+BEGIN
+    CALL update_net_worth(NEW.user_id, NEW.payday_id);
+END //
+
 DELIMITER ;
